@@ -27,24 +27,56 @@ SOFTWARE.
     "use strict";
     var that = {};
 
+    var dontStrip=[
+      "\xff\xc0",
+      "\xff\xc1",
+      "\xff\xc2",
+      "\xff\xc3",
+      "\xff\xc5",
+      "\xff\xc6",
+      "\xff\xc7",
+      "\xff\xc9",
+      "\xff\xca",
+      "\xff\xcb",
+      "\xff\xcd",
+      "\xff\xce",
+      "\xff\xcf",
+      "\xff\xd8",
+      "\xff\xd9",
+      "\xff\xda",
+//      "\xff\xe0",
+//      "\xff\xdb",
+//      "\xff\xc4",
+      "\xff\xdd"
+    ];
 
-    that.remove = function (jpeg) {
-        var b64 = false;
-        if (jpeg.slice(0, 2) == "\xff\xd8") {
-        } else if (jpeg.slice(0, 23) == "data:image/jpeg;base64,") {
-            jpeg = atob(jpeg.split(",")[1]);
-            b64 = true;
+    that.remove = function (exifReader, b64) {
+        var segments;
+
+        if (exifReader instanceof ExifReader) {
+          segments=exifReader.segments;
+          if (exifReader.app1_index!==undefined) {
+            segments.splice(exifReader.app1_segmentIndex,1);
+          }
+
         } else {
-            throw ("Given data is not jpeg.");
-        }
-        
-        var segments = splitIntoSegments(jpeg);
-        if (segments[1].slice(0, 2) == "\xff\xe1") {
-            segments = [segments[0]].concat(segments.slice(2));
-        } else if (segments[2].slice(0, 2) == "\xff\xe1") {
-            segments = segments.slice(0, 2).concat(segments.slice(3));
-        } else {
-            throw("Exif not found.");
+          var jpeg=exifReader;
+          if (jpeg.slice(0, 2) == "\xff\xd8") {
+          } else if (jpeg.slice(0, 23) == "data:image/jpeg;base64,") {
+              jpeg = atob(jpeg.split(",")[1]);
+              b64 = true;
+          } else {
+              throw ("Given data is not jpeg.");
+          }
+          segments = splitIntoSegments(jpeg);
+
+          if (segments[1].slice(0, 2) == "\xff\xe1") {
+              segments = [segments[0]].concat(segments.slice(2));
+          } else if (segments[2].slice(0, 2) == "\xff\xe1") {
+              segments = segments.slice(0, 2).concat(segments.slice(3));
+          } else {
+              throw("Exif not found.");
+          }
         }
         
         var new_data = segments.join("");
@@ -55,23 +87,29 @@ SOFTWARE.
         return new_data;
     };
 
-
-    that.insert = function (exif, jpeg) {
-        var b64 = false;
+    that.insert = function (exif, exifReader, b64) {
         if (exif.slice(0, 6) != "\x45\x78\x69\x66\x00\x00") {
             throw ("Given data is not exif.");
         }
-        if (jpeg.slice(0, 2) == "\xff\xd8") {
-        } else if (jpeg.slice(0, 23) == "data:image/jpeg;base64,") {
-            jpeg = atob(jpeg.split(",")[1]);
-            b64 = true;
+        var exifStr = "\xff\xe1" + pack(">H", [exif.length + 2]) + exif;
+
+        if (exifReader instanceof ExifReader) {
+          var new_data = mergeSegments(exifReader.segments, exifStr);
+
         } else {
-            throw ("Given data is not jpeg.");
+          var jpeg=exifReader;
+          if (jpeg.slice(0, 2) == "\xff\xd8") {
+          } else if (jpeg.slice(0, 23) == "data:image/jpeg;base64,") {
+              jpeg = atob(jpeg.split(",")[1]);
+              b64 = true;
+          } else {
+              throw ("Given data is not jpeg.");
+          }
+          var segments = splitIntoSegments(jpeg);
+          var new_data = mergeSegments(segments, exifStr);
+
         }
 
-        var exifStr = "\xff\xe1" + pack(">H", [exif.length + 2]) + exif;
-        var segments = splitIntoSegments(jpeg);
-        var new_data = mergeSegments(segments, exifStr);
         if (b64) {
             new_data = "data:image/jpeg;base64," + btoa(new_data);
         }
@@ -79,14 +117,29 @@ SOFTWARE.
         return new_data;
     };
 
+    that.replace = function (exif, exifReader, b64) {
+        if (exif.slice(0, 6) != "\x45\x78\x69\x66\x00\x00") {
+            throw ("Given data is not exif.");
+        }
+        var exifStr = "\xff\xe1" + pack(">H", [exif.length + 2]) + exif;
+        exifReader.segments[exifReader.app1_segmentIndex] = exifStr;
+        var new_data = exifReader.segments.join('');
+        if (b64) {
+            new_data = "data:image/jpeg;base64," + btoa(new_data);
+        }
+
+        return new_data;
+    };
 
     that.load = function (data) {
         var input_data;
+        var b64 = false;
         if (typeof (data) == "string") {
             if (data.slice(0, 2) == "\xff\xd8") {
                 input_data = data;
             } else if (data.slice(0, 23) == "data:image/jpeg;base64,") {
                 input_data = atob(data.split(",")[1]);
+                b64 = true;
             } else if (data.slice(0, 4) == "Exif") {
                 input_data = data.slice(6);
             } else {
@@ -96,7 +149,6 @@ SOFTWARE.
             throw ("'load' gots invalid type argument.");
         }
 
-        var exifDict = {};
         var exif_dict = {
             "0th": {},
             "Exif": {},
@@ -107,7 +159,11 @@ SOFTWARE.
         };
         var exifReader = new ExifReader(input_data);
         if (exifReader.tiftag === null) {
-            return exif_dict;
+            return {
+              exif_dict: exif_dict,
+              b64: b64,
+              exifReader: exifReader
+            }
         }
 
         if (exifReader.tiftag.slice(0, 2) == "\x49\x49") {
@@ -146,7 +202,11 @@ SOFTWARE.
             }
         }
 
-        return exif_dict;
+        return {
+          exif_dict: exif_dict,
+          b64: b64,
+          exifReader: exifReader
+        }
     };
 
 
@@ -466,20 +526,21 @@ SOFTWARE.
 
 
     function ExifReader(data) {
-        var segments,
-            app1;
+        var exifReader=this;
+        var app1;
         if (data.slice(0, 2) == "\xff\xd8") { // JPEG
-            segments = splitIntoSegments(data);
-            app1 = getApp1(segments);
+            exifReader.segments = splitIntoSegments(data);
+            app1 = getApp1(exifReader.segments);
             if (app1) {
-                this.tiftag = app1.slice(10);
+                exifReader.tiftag = app1.seg.slice(10);
+                exifReader.app1_segmentIndex=app1.index;
             } else {
-                this.tiftag = null;
+                exifReader.tiftag = null;
             }
         } else if (["\x49\x49", "\x4d\x4d"].indexOf(data.slice(0, 2)) > -1) { // TIFF
-            this.tiftag = data;
+            exifReader.tiftag = data;
         } else if (data.slice(0, 4) == "Exif") { // Exif
-            this.tiftag = data.slice(6);
+            exifReader.tiftag = data.slice(6);
         } else {
             throw ("Given file is neither JPEG nor TIFF.");
         }
@@ -616,6 +677,21 @@ SOFTWARE.
                 return data;
             }
         },
+
+        getJpegData: function() {
+          var exifReader=this;
+          var segments=exifReader.segments;
+          var data=[];
+          for (var i=0; i<segments.length; ++i) {
+            var marker=segments[i].slice(0,2);
+            if (dontStrip.indexOf(marker)>=0) {
+              data.push(segments[i]);
+              console.log(segments[i].length);
+            } 
+          }
+          return data.join('');
+        }
+
     };
 
 
@@ -897,7 +973,10 @@ SOFTWARE.
         for (var i = 0; i < segments.length; i++) {
             seg = segments[i];
             if (seg.slice(0, 2) == "\xff\xe1") {
-                return seg;
+                return {
+                  seg: seg,
+                  index: i
+                };
             }
         }
         return null;
@@ -908,7 +987,6 @@ SOFTWARE.
         if ((segments[1].slice(0, 2) == "\xff\xe0") &&
             (segments[2].slice(0, 2) == "\xff\xe1")) {
             if (exif) {
-                segments[2] = exif;
                 segments = ["\xff\xd8", exif].concat(segments.slice(2));
             } else if (exif == null) {
                 segments = segments.slice(0, 2).concat(segments.slice(3));
